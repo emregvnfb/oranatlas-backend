@@ -1,9 +1,15 @@
 from contextlib import contextmanager
 import psycopg
 from psycopg.rows import dict_row
-from settings import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+from settings import DATABASE_URL, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
 
 def get_connection():
+    if DATABASE_URL:
+        return psycopg.connect(
+            DATABASE_URL,
+            row_factory=dict_row,
+        )
+
     return psycopg.connect(
         host=DB_HOST,
         port=DB_PORT,
