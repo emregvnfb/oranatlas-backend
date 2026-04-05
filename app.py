@@ -173,8 +173,20 @@ def api_admin_action():
 
     return jsonify({"success": False, "message": "Geçersiz işlem."}), 400
 
-import os
+
+@app.route("/api/run-update")
+def run_update():
+    from flask import request
+    import subprocess
+
+    if request.args.get("key") != "123456":
+        return {"status": "unauthorized"}, 401
+
+    try:
+        subprocess.run(["python", "run_data_update.py"], check=True)
+        return {"status": "ok", "message": "update started"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)
