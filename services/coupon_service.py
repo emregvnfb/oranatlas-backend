@@ -336,7 +336,7 @@ def build_coupon(selected_items, risk_label):
         "avg_ev": round(sum(float(x.get("ev") or 0) for x in selected_items) / len(selected_items), 4),
         "items": selected_items,
         "risk": risk_label,
-        "is_high_odd": risk_label.lower().startswith("agresif") or risk_label.lower().startswith("yüksek"),
+        "is_high_odd": False,
     }
 
 
@@ -369,46 +369,23 @@ def generate_daily_coupon_package(coupon_date: str):
     coupons_6 = []
     high_odd_coupons = []
 
+    # 3'lü güvenli kupon
     c3_seed = take_top_unique(safe_pool, 3)
-    c3 = fill_to_target(c3_seed, pool, 3, max_aggressive=0)
+    c3 = fill_to_target(c3_seed, balanced_pool + pool, 3, max_aggressive=0)
     coupon3 = build_coupon(c3, "Güvenli")
     if coupon3:
         coupons_3.append(coupon3)
 
+    # 4'lü dengeli kupon
     c4_seed = []
     c4_seed = unique_extend(c4_seed, safe_pool, 2)
     c4_seed = unique_extend(c4_seed, balanced_pool, 4)
-    c4 = fill_to_target(c4_seed, pool, 4, max_aggressive=1)
+    c4 = fill_to_target(c4_seed, balanced_pool + aggressive_pool + pool, 4, max_aggressive=1)
     coupon4 = build_coupon(c4, "Dengeli")
     if coupon4:
         coupons_4.append(coupon4)
 
-    c5_seed = []
-    c5_seed = unique_extend(c5_seed, safe_pool, 2)
-    c5_seed = unique_extend(c5_seed, balanced_pool, 4)
-    c5_seed = unique_extend(c5_seed, aggressive_pool, 5)
-    c5 = fill_to_target(c5_seed, pool, 5, max_aggressive=1)
-    coupon5 = build_coupon(c5, "Agresif")
-    if coupon5:
-        coupons_5.append(coupon5)
-
-    c6_seed = []
-    c6_seed = unique_extend(c6_seed, safe_pool, 2)
-    c6_seed = unique_extend(c6_seed, balanced_pool, 5)
-    c6_seed = unique_extend(c6_seed, aggressive_pool, 6)
-    c6 = fill_to_target(c6_seed, pool, 6, max_aggressive=1)
-    coupon6 = build_coupon(c6, "Yüksek")
-    if coupon6:
-        coupons_6.append(coupon6)
-
-    hs_seed = []
-    hs_seed = unique_extend(hs_seed, balanced_pool, 3)
-    hs_seed = unique_extend(hs_seed, aggressive_pool, 4)
-    hs = fill_to_target(hs_seed, pool, 4, max_aggressive=1)
-    high_coupon = build_coupon(hs, "Agresif Özel")
-    if high_coupon:
-        high_odd_coupons.append(high_coupon)
-
+    # Kullanıcının isteği: 5'li ve 6'lı kupon üretme
     package = {
         "pool": pool_public,
         "high_odd_coupons": high_odd_coupons,
