@@ -1,3 +1,4 @@
+
 # prediction_service_v2.py
 # -*- coding: utf-8 -*-
 
@@ -39,37 +40,34 @@ class BestPredictionResult:
 class PredictionServiceV2:
     def __init__(self, db_path: str = "matches.db"):
         self.db_path = db_path
-
         self.default_league_weights = {
-            "Turkey Super Lig": 1.02,
-            "England Premier League": 1.08,
-            "Spain La Liga": 1.08,
-            "Italy Serie A": 1.07,
-            "Germany Bundesliga": 1.07,
-            "France Ligue 1": 1.06,
-            "UEFA Champions League": 1.10,
-            "UEFA Europa League": 1.07,
+            "Turkey Super Lig": 1.04,
+            "England Premier League": 1.10,
+            "Spain La Liga": 1.09,
+            "Italy Serie A": 1.08,
+            "Germany Bundesliga": 1.08,
+            "France Ligue 1": 1.07,
+            "UEFA Champions League": 1.12,
+            "UEFA Europa League": 1.08,
+            "UEFA Conference League": 1.06,
         }
-
         self.market_stability_weights = {
-            "HOME_WIN": 1.00,
-            "DRAW": 0.92,
-            "AWAY_WIN": 1.00,
-            "DOUBLE_CHANCE_1X": 1.10,
-            "DOUBLE_CHANCE_X2": 1.08,
-            "DOUBLE_CHANCE_12": 1.04,
-            "OVER_1_5": 1.10,
-            "UNDER_3_5": 1.06,
-            "BTTS_YES": 1.00,
-            "BTTS_NO": 0.98,
+            "HOME_WIN": 0.95,
+            "DRAW": 0.72,
+            "AWAY_WIN": 0.90,
+            "DOUBLE_CHANCE_1X": 1.12,
+            "DOUBLE_CHANCE_X2": 1.10,
+            "DOUBLE_CHANCE_12": 0.94,
+            "OVER_1_5": 1.14,
+            "UNDER_3_5": 1.10,
+            "BTTS_YES": 0.84,
+            "BTTS_NO": 0.90,
         }
-
-        # Relaxed thresholds so V2 actually returns markets instead of empty lists
         self.min_odds = 1.18
-        self.max_reasonable_odds = 5.50
+        self.max_reasonable_odds = 4.20
         self.min_probability = 0.40
-        self.min_ev = -0.03
-        self.min_confidence = 0.42
+        self.min_ev = 0.05
+        self.min_confidence = 0.36
 
     def analyze_match(self, match_row: Dict[str, Any], odds_data: Dict[str, float]) -> BestPredictionResult:
         league_name = str(match_row.get("league_name", "") or "")
@@ -87,7 +85,6 @@ class PredictionServiceV2:
         for market_key, market_info in market_probs.items():
             odds_key = market_info["odds_key"]
             odds = self._safe_float(odds_data.get(odds_key))
-
             if odds is None:
                 continue
             if odds < self.min_odds or odds > self.max_reasonable_odds:
@@ -102,49 +99,50 @@ class PredictionServiceV2:
             confidence = self._clamp(base_conf * league_weight * stability_weight, 0.01, 0.99)
 
             score = (
-                (ev * 100.0) * 0.45 +
-                (confidence * 100.0) * 0.30 +
-                (probability * 100.0) * 0.25
+                (ev * 100.0) * 0.58 +
+                (confidence * 100.0) * 0.18 +
+                (probability * 100.0) * 0.24
             )
 
-            if odds >= 4.50:
-                score -= 9
-            elif odds >= 3.20:
+            if odds >= 4.00:
+                score -= 18
+            elif odds >= 3.40:
+                score -= 10
+            elif odds >= 2.80:
                 score -= 5
-            elif odds >= 2.50:
-                score -= 2
 
-            reason = self._build_reason_text(
-                match_row=match_row,
-                market_key=market_key,
-                probability=probability,
-                odds=odds,
-                ev=ev,
-                confidence=confidence,
-                league_weight=league_weight
-            )
+            if market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+                score += 7
+            if market_key in {"DRAW", "BTTS_YES", "AWAY_WIN"}:
+                score -= 6
 
-            pred = MarketPrediction(
-                market_key=market_key,
-                market_name=market_info["market_name"],
-                selection=market_info["selection"],
-                probability=round(probability, 4),
-                implied_probability=round(implied_probability, 4),
-                odds=round(odds, 2),
-                ev=round(ev, 4),
-                confidence=round(confidence, 4),
-                league_weight=round(league_weight, 4),
-                score=round(score, 2),
-                reason=reason
+            reason = self._build_reason_text(match_row, market_key, probability, odds, ev, confidence, league_weight)
+
+            all_scored.append(
+                MarketPrediction(
+                    market_key=market_key,
+                    market_name=market_info["market_name"],
+                    selection=market_info["selection"],
+                    probability=round(probability, 4),
+                    implied_probability=round(implied_probability, 4),
+                    odds=round(odds, 2),
+                    ev=round(ev, 4),
+                    confidence=round(confidence, 4),
+                    league_weight=round(league_weight, 4),
+                    score=round(score, 2),
+                    reason=reason,
+                )
             )
-            all_scored.append(pred)
 
         filtered_predictions = self._filter_predictions(all_scored)
         filtered_predictions.sort(key=lambda x: x.score, reverse=True)
         all_scored.sort(key=lambda x: x.score, reverse=True)
 
-        # Important: if relaxed filters still produce nothing, keep top raw candidates
-        final_predictions = filtered_predictions if filtered_predictions else all_scored[:3]
+        fallback = [
+            x for x in all_scored
+            if x.ev >= 0.08 and x.confidence >= 0.38 and x.market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}
+        ][:2]
+        final_predictions = filtered_predictions if filtered_predictions else fallback
         best_market = final_predictions[0] if final_predictions else None
 
         return BestPredictionResult(
@@ -166,43 +164,6 @@ class PredictionServiceV2:
                 "raw_prediction_count": len(all_scored),
             }
         )
-
-    def analyze_matches_bulk(self, matches: List[Dict[str, Any]]) -> List[BestPredictionResult]:
-        results: List[BestPredictionResult] = []
-        for row in matches:
-            odds_data = row.get("odds_data", {}) or {}
-            result = self.analyze_match(row, odds_data)
-            results.append(result)
-        return results
-
-    def choose_coupon_candidates(
-        self,
-        matches: List[Dict[str, Any]],
-        min_score: float = 45.0,
-        min_confidence: float = 0.44,
-        min_ev: float = -0.03,
-        prefer_odds_min: float = 1.20,
-        prefer_odds_max: float = 1.65
-    ) -> List[Dict[str, Any]]:
-        analyzed = self.analyze_matches_bulk(matches)
-        candidates: List[Dict[str, Any]] = []
-        used_pairs = set()
-
-        for res in analyzed:
-            bm = res.best_market
-            if not bm:
-                continue
-
-            pair_key = (res.home_team, res.away_team, bm.market_key)
-            if pair_key in used_pairs:
-                continue
-
-            if bm.score >= min_score and bm.confidence >= min_confidence and bm.ev >= min_ev:
-                candidates.append(self._coupon_row(res))
-                used_pairs.add(pair_key)
-
-        candidates.sort(key=lambda x: (x["score"], x["confidence"], x["ev"]), reverse=True)
-        return candidates
 
     def _predict_base_probabilities(self, row: Dict[str, Any]) -> Dict[str, float]:
         home_form = self._safe_float(row.get("home_form"), 0.50)
@@ -263,14 +224,10 @@ class PredictionServiceV2:
         raw_away = math.exp(away_strength)
         denom = raw_home + raw_draw + raw_away
 
-        p_home = raw_home / denom
-        p_draw = raw_draw / denom
-        p_away = raw_away / denom
-
         return {
-            "p_home": p_home,
-            "p_draw": p_draw,
-            "p_away": p_away,
+            "p_home": raw_home / denom,
+            "p_draw": raw_draw / denom,
+            "p_away": raw_away / denom,
             "home_strength": round(home_strength, 4),
             "draw_strength": round(draw_strength, 4),
             "away_strength": round(away_strength, 4),
@@ -290,7 +247,7 @@ class PredictionServiceV2:
         p_12 = self._clamp(p_home + p_away, 0.01, 0.99)
 
         p_over_15 = self._clamp(0.42 + (goals_exp * 0.18), 0.40, 0.92)
-        p_under_35 = self._clamp(0.88 - (max(goals_exp - 2.2, 0) * 0.16), 0.35, 0.90)
+        p_under_3_5 = self._clamp(0.88 - (max(goals_exp - 2.2, 0) * 0.16), 0.35, 0.90)
         p_btts_yes = self._clamp(0.35 + (btts_exp * 0.16), 0.25, 0.85)
         p_btts_no = self._clamp(1.0 - p_btts_yes, 0.15, 0.75)
 
@@ -302,7 +259,7 @@ class PredictionServiceV2:
             "DOUBLE_CHANCE_X2": {"market_name": "Çifte Şans", "selection": "X2", "probability": p_x2, "odds_key": "double_chance_x2"},
             "DOUBLE_CHANCE_12": {"market_name": "Çifte Şans", "selection": "12", "probability": p_12, "odds_key": "double_chance_12"},
             "OVER_1_5": {"market_name": "Toplam Gol", "selection": "1.5 Üst", "probability": p_over_15, "odds_key": "over_1_5"},
-            "UNDER_3_5": {"market_name": "Toplam Gol", "selection": "3.5 Alt", "probability": p_under_35, "odds_key": "under_3_5"},
+            "UNDER_3_5": {"market_name": "Toplam Gol", "selection": "3.5 Alt", "probability": p_under_3_5, "odds_key": "under_3_5"},
             "BTTS_YES": {"market_name": "Karşılıklı Gol", "selection": "KG Var", "probability": p_btts_yes, "odds_key": "btts_yes"},
             "BTTS_NO": {"market_name": "Karşılıklı Gol", "selection": "KG Yok", "probability": p_btts_no, "odds_key": "btts_no"},
         }
@@ -318,7 +275,6 @@ class PredictionServiceV2:
             row.get("home_goals_for"),
             row.get("away_goals_for"),
         ]
-
         non_null_count = sum(1 for x in fields if x is not None)
         data_quality = non_null_count / len(fields)
 
@@ -340,8 +296,7 @@ class PredictionServiceV2:
         )
 
         if market_key in {"DRAW", "BTTS_YES", "BTTS_NO"}:
-            conf *= 0.95
-
+            conf *= 0.85
         return self._clamp(conf, 0.01, 0.99)
 
     def _get_league_weight(self, league_name: str) -> float:
@@ -364,7 +319,7 @@ class PredictionServiceV2:
             if not row or row["avg_success"] is None:
                 return None
             weight = 1.0 + ((float(row["avg_success"]) - 0.50) * 0.8)
-            return self._clamp(weight, 0.88, 1.12)
+            return self._clamp(weight, 0.88, 1.15)
         except Exception:
             return None
 
@@ -377,47 +332,23 @@ class PredictionServiceV2:
                 continue
             if p.confidence < self.min_confidence:
                 continue
+            if p.market_key == "BTTS_YES":
+                continue
+            if p.market_key == "DRAW":
+                continue
+            if p.market_key in {"HOME_WIN", "AWAY_WIN"} and p.odds > 2.40:
+                continue
+            if p.market_key in {"HOME_WIN", "AWAY_WIN"} and p.ev < 0.08:
+                continue
             out.append(p)
         return out
 
-    def _coupon_row(self, res: BestPredictionResult) -> Dict[str, Any]:
-        bm = res.best_market
-        assert bm is not None
-        return {
-            "match_id": res.match_id,
-            "league_name": res.league_name,
-            "home_team": res.home_team,
-            "away_team": res.away_team,
-            "kickoff": res.kickoff,
-            "market_key": bm.market_key,
-            "market_name": bm.market_name,
-            "selection": bm.selection,
-            "odds": bm.odds,
-            "probability": bm.probability,
-            "implied_probability": bm.implied_probability,
-            "ev": bm.ev,
-            "confidence": bm.confidence,
-            "league_weight": bm.league_weight,
-            "score": bm.score,
-            "reason": bm.reason,
-        }
-
-    def _build_reason_text(
-        self,
-        match_row: Dict[str, Any],
-        market_key: str,
-        probability: float,
-        odds: float,
-        ev: float,
-        confidence: float,
-        league_weight: float
-    ) -> str:
+    def _build_reason_text(self, match_row: Dict[str, Any], market_key: str, probability: float, odds: float, ev: float, confidence: float, league_weight: float) -> str:
+        parts = []
         home_form = self._safe_float(match_row.get("home_form"), 0.50)
         away_form = self._safe_float(match_row.get("away_form"), 0.50)
         home_points = self._safe_float(match_row.get("home_points_per_match"), 1.30)
         away_points = self._safe_float(match_row.get("away_points_per_match"), 1.20)
-
-        parts = []
 
         if home_form > away_form:
             parts.append("ev sahibi form avantajlı")
@@ -429,29 +360,20 @@ class PredictionServiceV2:
         elif away_points > home_points:
             parts.append("deplasman puan ortalaması üstün")
 
-        if probability >= 0.70:
-            parts.append("olasılık güçlü")
-        elif probability >= 0.55:
-            parts.append("olasılık tatmin edici")
-
-        if ev >= 0.08:
+        if ev >= 0.12:
             parts.append("yüksek value")
-        elif ev >= 0.00:
-            parts.append("nötr-pozitif value")
-        elif ev >= -0.03:
-            parts.append("sınırda value")
+        elif ev >= 0.08:
+            parts.append("pozitif value")
 
-        if confidence >= 0.72:
-            parts.append("güven yüksek")
-        elif confidence >= 0.50:
+        if confidence >= 0.52:
             parts.append("güven yeterli")
-
+        if market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+            parts.append("daha stabil market")
         if league_weight > 1.03:
             parts.append("lig güven katsayısı pozitif")
 
         if not parts:
             parts.append("istatistiksel denge olumlu")
-
         return ", ".join(parts)
 
     def _safe_float(self, value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -468,12 +390,11 @@ class PredictionServiceV2:
 
 if __name__ == "__main__":
     service = PredictionServiceV2(db_path="matches.db")
-
     sample_match = {
         "match_id": 101,
         "league_name": "Turkey Super Lig",
         "home_team": "Galatasaray",
-        "away_team": "Kasımpaşa",
+        "away_team": "Kasimpasa",
         "match_date": "2026-04-06 20:00:00",
         "home_form": 0.82,
         "away_form": 0.48,
@@ -491,7 +412,6 @@ if __name__ == "__main__":
         "away_win_rate": 0.26,
         "draw_rate": 0.22,
     }
-
     sample_odds = {
         "home_win": 1.42,
         "draw": 4.20,
@@ -504,15 +424,9 @@ if __name__ == "__main__":
         "btts_yes": 1.72,
         "btts_no": 2.02,
     }
-
     result = service.analyze_match(sample_match, sample_odds)
-
-    print("=== EN İYİ TAHMİN ===")
+    print("=== EN IYI TAHMIN ===")
     if result.best_market:
         print(asdict(result.best_market))
     else:
-        print("Uygun market bulunamadı.")
-
-    print("\n=== TÜM TAHMİNLER ===")
-    for item in result.all_predictions:
-        print(asdict(item))
+        print("Uygun market bulunamadi.")

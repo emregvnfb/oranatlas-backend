@@ -1,7 +1,7 @@
+
 import json
 from datetime import datetime, timezone
 from db import fetch_all, execute, fetch_one
-from services.prediction_service import build_simple_prediction
 from services.prediction_service_v2 import PredictionServiceV2
 
 BIG_LEAGUE_KEYWORDS = [
@@ -19,9 +19,6 @@ BIG_LEAGUE_KEYWORDS = [
     "Liga MX",
     "MLS",
 ]
-
-SAFE_MIN_ODD = 1.20
-SAFE_MAX_ODD = 1.65
 
 prediction_service_v2 = PredictionServiceV2(db_path="matches.db")
 
@@ -105,35 +102,39 @@ def get_normalized_odds_for_fixture(fixture_id: int):
 def score_pick(item: dict) -> float:
     confidence = float(item.get("confidence") or 0)
     odd = float(item.get("bet_odd") or 0)
-    league_name = str(item.get("league") or "")
     ev = float(item.get("ev") or 0)
-    base_score = float(item.get("score") or 0)
+    market_key = str(item.get("market_key") or "")
+    score = float(item.get("score") or 0)
 
-    score = base_score if base_score > 0 else confidence
-
-    if is_big_league(league_name):
+    if 1.18 <= odd <= 1.65:
+        score += 14
+    elif 1.65 < odd <= 2.10:
         score += 8
+    elif 2.10 < odd <= 2.40:
+        score += 3
+    else:
+        score -= 20
 
-    if SAFE_MIN_ODD <= odd <= SAFE_MAX_ODD:
-        score += 12
-    elif 1.65 < odd <= 2.35:
-        score += 5
-    elif odd > 4.20:
-        score -= 8
-    elif odd > 3.20:
-        score -= 4
-
-    if confidence < 38:
-        score -= 8
-    elif confidence >= 55:
+    if confidence >= 44:
         score += 6
+    elif confidence >= 38:
+        score += 3
+    else:
+        score -= 10
 
-    if ev >= 0.08:
-        score += 8
-    elif ev >= 0.00:
+    if ev >= 0.18:
+        score += 10
+    elif ev >= 0.12:
+        score += 7
+    elif ev >= 0.08:
         score += 4
-    elif ev >= -0.03:
-        score += 1
+    else:
+        score -= 12
+
+    if market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+        score += 8
+    else:
+        score -= 6
 
     return round(score, 2)
 
@@ -155,12 +156,10 @@ def _fetch_pool_source_rows():
         WHERE f.status NOT IN ('FT', 'AET', 'PEN')
           AND f.starting_at_utc >= (NOW() AT TIME ZONE 'UTC')
           AND EXISTS (
-              SELECT 1
-              FROM odds_latest ol
-              WHERE ol.fixture_id = f.id
+              SELECT 1 FROM odds_latest ol WHERE ol.fixture_id = f.id
           )
         ORDER BY f.starting_at_utc ASC
-        LIMIT 500
+        LIMIT 700
         '''
     ) or []
 
@@ -191,6 +190,44 @@ def _build_feature_row(fixture_row):
     }
 
 
+def _risk_bucket(item: dict) -> str:
+    odd = float(item.get("bet_odd") or 0)
+    ev = float(item.get("ev") or 0)
+    confidence = float(item.get("confidence") or 0)
+    market_key = str(item.get("market_key") or "")
+
+    if odd <= 1.70 and ev >= 0.08 and confidence >= 40 and market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+        return "safe"
+    if odd <= 2.10 and ev >= 0.08 and confidence >= 38 and market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+        return "balanced"
+    if odd <= 2.40 and ev >= 0.10 and confidence >= 40 and market_key in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+        return "aggressive"
+    return "wild"
+
+
+def _is_pool_eligible(item: dict) -> bool:
+    if item.get("engine") != "v2":
+        return False
+
+    market_key = str(item.get("market_key") or "")
+    odd = float(item.get("bet_odd") or 0)
+    ev = float(item.get("ev") or 0)
+    confidence = float(item.get("confidence") or 0)
+    risk_bucket = str(item.get("risk_bucket") or "")
+
+    if risk_bucket == "wild":
+        return False
+    if ev < 0.08:
+        return False
+    if confidence < 38:
+        return False
+    if odd > 2.40:
+        return False
+    if market_key not in {"OVER_1_5", "DOUBLE_CHANCE_1X", "DOUBLE_CHANCE_X2", "UNDER_3_5"}:
+        return False
+    return True
+
+
 def build_pool():
     rows = _fetch_pool_source_rows()
     pool = []
@@ -204,38 +241,12 @@ def build_pool():
         odds_data = get_normalized_odds_for_fixture(fixture_id)
         feature_row = _build_feature_row(row)
 
-        if odds_data:
-            v2_result = prediction_service_v2.analyze_match(feature_row, odds_data)
-            best = v2_result.best_market
-            if best:
-                item = {
-                    "fixture_id": fixture_id,
-                    "home": row["home_team"],
-                    "away": row["away_team"],
-                    "league": row["league_name"],
-                    "country": row["country_name"],
-                    "date": row["starting_at_utc"].isoformat() if row["starting_at_utc"] else "",
-                    "market_key": best.market_key,
-                    "market_name": best.market_name,
-                    "bet_label": best.selection,
-                    "selection_key": best.market_key,
-                    "confidence": round(float(best.confidence) * 100.0, 2),
-                    "bet_odd": round(float(best.odds), 2),
-                    "probability": round(float(best.probability), 4),
-                    "implied_probability": round(float(best.implied_probability), 4),
-                    "ev": round(float(best.ev), 4),
-                    "reason": best.reason,
-                    "score": round(float(best.score), 2),
-                    "is_big_league": is_big_league(row["league_name"]),
-                    "engine": "v2",
-                }
-                item["score"] = score_pick(item)
-                pool.append(item)
-                used_fixture_ids.add(fixture_id)
-                continue
+        if not odds_data:
+            continue
 
-        prediction = build_simple_prediction(fixture_id)
-        if not prediction:
+        v2_result = prediction_service_v2.analyze_match(feature_row, odds_data)
+        best = v2_result.best_market
+        if not best:
             continue
 
         item = {
@@ -245,42 +256,42 @@ def build_pool():
             "league": row["league_name"],
             "country": row["country_name"],
             "date": row["starting_at_utc"].isoformat() if row["starting_at_utc"] else "",
-            "market_key": prediction.get("market_key", "match_winner"),
-            "market_name": prediction.get("market_name", "Maç Sonucu"),
-            "bet_label": prediction.get("selection_label", prediction.get("bet_label", "")),
-            "selection_key": prediction.get("selection_key", ""),
-            "confidence": round(float(prediction.get("confidence_score") or 0), 2),
-            "bet_odd": round(float(prediction.get("bet_odd") or prediction.get("odd") or 0), 2),
-            "probability": None,
-            "implied_probability": None,
-            "ev": 0.0,
-            "reason": prediction.get("reason", "legacy fallback"),
-            "score": 0.0,
+            "market_key": best.market_key,
+            "market_name": best.market_name,
+            "bet_label": best.selection,
+            "selection_key": best.market_key,
+            "confidence": round(float(best.confidence) * 100.0, 2),
+            "bet_odd": round(float(best.odds), 2),
+            "probability": round(float(best.probability), 4),
+            "implied_probability": round(float(best.implied_probability), 4),
+            "ev": round(float(best.ev), 4),
+            "reason": best.reason,
+            "score": round(float(best.score), 2),
             "is_big_league": is_big_league(row["league_name"]),
-            "engine": "legacy",
+            "engine": "v2",
         }
         item["score"] = score_pick(item)
+        item["risk_bucket"] = _risk_bucket(item)
+
+        if not _is_pool_eligible(item):
+            continue
+
         pool.append(item)
         used_fixture_ids.add(fixture_id)
 
-    pool.sort(key=lambda x: (x["score"], x["confidence"]), reverse=True)
+    pool.sort(key=lambda x: (
+        float(x.get("score") or 0),
+        float(x.get("ev") or 0),
+        float(x.get("confidence") or 0),
+    ), reverse=True)
     return pool
 
 
 def split_pool(pool):
-    safe_candidates = [
-        x for x in pool
-        if SAFE_MIN_ODD <= float(x.get("bet_odd") or 0) <= SAFE_MAX_ODD and float(x.get("confidence") or 0) >= 38
-    ]
-    medium_candidates = [
-        x for x in pool
-        if 1.65 < float(x.get("bet_odd") or 0) <= 2.35 and float(x.get("confidence") or 0) >= 38
-    ]
-    high_candidates = [
-        x for x in pool
-        if 2.35 < float(x.get("bet_odd") or 0) <= 4.20 and float(x.get("confidence") or 0) >= 36
-    ]
-    return safe_candidates, medium_candidates, high_candidates
+    safe_candidates = [x for x in pool if x.get("risk_bucket") == "safe"]
+    balanced_candidates = [x for x in pool if x.get("risk_bucket") in {"safe", "balanced"}]
+    aggressive_candidates = [x for x in pool if x.get("risk_bucket") in {"balanced", "aggressive"}]
+    return safe_candidates, balanced_candidates, aggressive_candidates
 
 
 def unique_extend(target, source, limit):
@@ -295,25 +306,22 @@ def unique_extend(target, source, limit):
     return target
 
 
-def build_coupon(items, risk_label, require_safe=False, min_total_odd=None):
+def build_coupon(items, risk_label, min_total_odd=None, max_total_odd=None):
     if not items:
         return None
-
-    selected = []
-    if require_safe:
-        safe_items = [x for x in items if SAFE_MIN_ODD <= float(x.get("bet_odd") or 0) <= SAFE_MAX_ODD]
-        if safe_items:
-            selected.append(safe_items[0])
-
-    selected = unique_extend(selected, items, len(items))
 
     total_odd = 1.0
     usable_items = []
     used_fixture_ids = set()
+    aggressive_count = 0
 
-    for item in selected:
+    for item in items:
         if item["fixture_id"] in used_fixture_ids:
             continue
+        if item.get("risk_bucket") == "aggressive":
+            if aggressive_count >= 1:
+                continue
+            aggressive_count += 1
         used_fixture_ids.add(item["fixture_id"])
         usable_items.append(item)
         total_odd *= float(item["bet_odd"])
@@ -325,14 +333,17 @@ def build_coupon(items, risk_label, require_safe=False, min_total_odd=None):
 
     if min_total_odd is not None and total_odd < min_total_odd:
         return None
+    if max_total_odd is not None and total_odd > max_total_odd:
+        return None
 
     return {
         "coupon_size": len(usable_items),
         "total_odd": total_odd,
         "avg_confidence": round(sum(float(x["confidence"]) for x in usable_items) / len(usable_items), 2),
+        "avg_ev": round(sum(float(x.get("ev") or 0) for x in usable_items) / len(usable_items), 4),
         "items": usable_items,
         "risk": risk_label,
-        "is_high_odd": risk_label.lower().startswith("yüksek"),
+        "is_high_odd": risk_label.lower().startswith("agresif") or risk_label.lower().startswith("yüksek"),
     }
 
 
@@ -351,7 +362,7 @@ def take_top_unique(pool, n):
 
 def generate_daily_coupon_package(coupon_date: str):
     pool = build_pool()
-    safe_pool, medium_pool, high_pool = split_pool(pool)
+    safe_pool, balanced_pool, aggressive_pool = split_pool(pool)
 
     pool_public = []
     for item in pool:
@@ -365,50 +376,42 @@ def generate_daily_coupon_package(coupon_date: str):
     coupons_6 = []
     high_odd_coupons = []
 
-    base_3 = []
-    base_3 = unique_extend(base_3, safe_pool, 1)
-    base_3 = unique_extend(base_3, medium_pool, 3)
-    base_3 = unique_extend(base_3, pool, 3)
-    base_3 = take_top_unique(base_3, 3)
-    coupon3 = build_coupon(base_3, "Düşük-Orta", require_safe=True, min_total_odd=2.2)
+    c3 = take_top_unique(safe_pool, 3)
+    coupon3 = build_coupon(c3, "Güvenli", min_total_odd=1.9, max_total_odd=4.8)
     if coupon3:
         coupons_3.append(coupon3)
 
-    base_4 = []
-    base_4 = unique_extend(base_4, safe_pool, 1)
-    base_4 = unique_extend(base_4, medium_pool, 4)
-    base_4 = unique_extend(base_4, pool, 4)
-    base_4 = take_top_unique(base_4, 4)
-    coupon4 = build_coupon(base_4, "Orta", require_safe=True, min_total_odd=3.0)
+    c4 = []
+    c4 = unique_extend(c4, safe_pool, 2)
+    c4 = unique_extend(c4, balanced_pool, 4)
+    c4 = take_top_unique(c4, 4)
+    coupon4 = build_coupon(c4, "Dengeli", min_total_odd=2.6, max_total_odd=7.5)
     if coupon4:
         coupons_4.append(coupon4)
 
-    base_5 = []
-    base_5 = unique_extend(base_5, safe_pool, 1)
-    base_5 = unique_extend(base_5, medium_pool, 3)
-    base_5 = unique_extend(base_5, high_pool, 5)
-    base_5 = unique_extend(base_5, pool, 5)
-    base_5 = take_top_unique(base_5, 5)
-    coupon5 = build_coupon(base_5, "Orta-Yüksek", require_safe=True, min_total_odd=4.5)
+    c5 = []
+    c5 = unique_extend(c5, safe_pool, 2)
+    c5 = unique_extend(c5, balanced_pool, 4)
+    c5 = unique_extend(c5, aggressive_pool, 5)
+    c5 = take_top_unique(c5, 5)
+    coupon5 = build_coupon(c5, "Agresif", min_total_odd=3.8, max_total_odd=12.5)
     if coupon5:
         coupons_5.append(coupon5)
 
-    base_6 = []
-    base_6 = unique_extend(base_6, safe_pool, 1)
-    base_6 = unique_extend(base_6, medium_pool, 3)
-    base_6 = unique_extend(base_6, high_pool, 6)
-    base_6 = unique_extend(base_6, pool, 6)
-    base_6 = take_top_unique(base_6, 6)
-    coupon6 = build_coupon(base_6, "Yüksek", require_safe=True, min_total_odd=6.5)
+    c6 = []
+    c6 = unique_extend(c6, safe_pool, 2)
+    c6 = unique_extend(c6, balanced_pool, 5)
+    c6 = unique_extend(c6, aggressive_pool, 6)
+    c6 = take_top_unique(c6, 6)
+    coupon6 = build_coupon(c6, "Yüksek", min_total_odd=5.5, max_total_odd=16.0)
     if coupon6:
         coupons_6.append(coupon6)
 
     high_special = []
-    high_special = unique_extend(high_special, medium_pool, 2)
-    high_special = unique_extend(high_special, high_pool, 4)
-    high_special = unique_extend(high_special, pool, 4)
+    high_special = unique_extend(high_special, balanced_pool, 3)
+    high_special = unique_extend(high_special, aggressive_pool, 4)
     high_special = take_top_unique(high_special, 4)
-    high_coupon = build_coupon(high_special, "Yüksek Oran", require_safe=False, min_total_odd=7.0)
+    high_coupon = build_coupon(high_special, "Agresif Özel", min_total_odd=4.5, max_total_odd=11.0)
     if high_coupon:
         high_odd_coupons.append(high_coupon)
 
