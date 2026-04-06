@@ -32,7 +32,7 @@ def debug_routes():
 @app.get("/api/debug-version")
 def debug_version():
     return {
-        "version": "ORANATLAS DEBUG BUILD V2",
+        "version": "ORANATLAS DEBUG BUILD V3",
         "message": "Bu doğru app.py çalışıyor"
     }
 
@@ -66,25 +66,36 @@ def api_matches():
 def analyzable_matches():
     rows = fetch_all(
         '''
-        SELECT DISTINCT
-               f.id,
+        SELECT f.id,
                f.home_team AS home,
                f.away_team AS away,
                f.league_name AS league,
                f.country_name AS country,
                TO_CHAR(f.starting_at_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') AS date,
-               f.status
+               f.status,
+               f.starting_at_utc
         FROM fixtures f
-        JOIN odds_latest ol ON ol.fixture_id = f.id
         WHERE DATE(f.starting_at_utc AT TIME ZONE 'UTC') IN (CURRENT_DATE, CURRENT_DATE + 1)
+          AND EXISTS (
+              SELECT 1
+              FROM odds_latest ol
+              WHERE ol.fixture_id = f.id
+          )
         ORDER BY f.starting_at_utc ASC
         LIMIT 50
         '''
     )
+
+    result = []
+    for row in rows:
+        row = dict(row)
+        row.pop("starting_at_utc", None)
+        result.append(row)
+
     return jsonify({
         "success": True,
-        "count": len(rows),
-        "matches": rows
+        "count": len(result),
+        "matches": result
     })
 
 
