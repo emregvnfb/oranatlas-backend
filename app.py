@@ -30,8 +30,12 @@ def api_health():
 def api_matches():
     rows = fetch_all(
         '''
-        SELECT id, home_team AS home, away_team AS away, country_name AS country,
-               league_name AS league, TO_CHAR(starting_at_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') AS date,
+        SELECT id,
+               home_team AS home,
+               away_team AS away,
+               country_name AS country,
+               league_name AS league,
+               TO_CHAR(starting_at_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') AS date,
                status
         FROM fixtures
         WHERE DATE(starting_at_utc AT TIME ZONE 'UTC') IN (CURRENT_DATE, CURRENT_DATE + 1)
@@ -49,7 +53,7 @@ def api_coupons_today():
         return jsonify({
             "success": False,
             "message": "Bugün için kupon paketi henüz üretilmedi.",
-            "coupon_date": today["coupon_date"],
+            "coupon_date": today["coupon_date"] if today else None,
             "pool": [],
             "high_odd_coupons": [],
             "coupons_3": [],
@@ -90,6 +94,7 @@ def api_editor_coupon_save():
     password = str(payload.get("password") or "")
     if password != ADMIN_PASSWORD:
         return jsonify({"success": False, "message": "Şifre yanlış."}), 403
+
     text = str(payload.get("text") or "").strip()
     execute("DELETE FROM editor_coupon")
     execute(
@@ -105,6 +110,7 @@ def api_editor_coupon_delete():
     password = str(payload.get("password") or "")
     if password != ADMIN_PASSWORD:
         return jsonify({"success": False, "message": "Şifre yanlış."}), 403
+
     execute("DELETE FROM editor_coupon")
     return jsonify({"success": True, "message": "Editör kuponu silindi."})
 
@@ -118,7 +124,11 @@ def api_analyze():
 
     match_row = fetch_one(
         '''
-        SELECT id, home_team AS home, away_team AS away, country_name AS country, league_name AS league,
+        SELECT id,
+               home_team AS home,
+               away_team AS away,
+               country_name AS country,
+               league_name AS league,
                TO_CHAR(starting_at_utc AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') AS date
         FROM fixtures
         WHERE id = %s
