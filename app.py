@@ -8,6 +8,7 @@ from services.coupon_service import get_today_coupon_package, generate_daily_cou
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
+
 def safe_json_load(value, default):
     import json
     try:
@@ -19,9 +20,11 @@ def safe_json_load(value, default):
     except Exception:
         return default
 
+
 @app.get("/api/health")
 def api_health():
     return jsonify({"success": True, "message": f"{APP_NAME} çalışıyor."})
+
 
 @app.get("/api/matches")
 def api_matches():
@@ -36,6 +39,7 @@ def api_matches():
         '''
     )
     return jsonify({"success": True, "matches": rows})
+
 
 @app.get("/api/coupons/today")
 def api_coupons_today():
@@ -55,6 +59,7 @@ def api_coupons_today():
         })
     return jsonify({"success": True, "data": safe_json_load(package, {})})
 
+
 @app.get("/api/coupon-results/today")
 def api_coupon_results_today():
     row = fetch_one(
@@ -72,10 +77,12 @@ def api_coupon_results_today():
         })
     return jsonify({"success": True, "data": safe_json_load(row["result_json"], {})})
 
+
 @app.get("/api/editor-coupon")
 def api_editor_coupon_get():
     row = fetch_one("SELECT coupon_text FROM editor_coupon ORDER BY updated_at DESC LIMIT 1")
     return jsonify({"success": True, "text": row["coupon_text"] if row else ""})
+
 
 @app.post("/api/editor-coupon")
 def api_editor_coupon_save():
@@ -91,6 +98,7 @@ def api_editor_coupon_save():
     )
     return jsonify({"success": True, "message": "Editör kuponu kaydedildi."})
 
+
 @app.delete("/api/editor-coupon")
 def api_editor_coupon_delete():
     payload = request.get_json(silent=True) or {}
@@ -99,6 +107,7 @@ def api_editor_coupon_delete():
         return jsonify({"success": False, "message": "Şifre yanlış."}), 403
     execute("DELETE FROM editor_coupon")
     return jsonify({"success": True, "message": "Editör kuponu silindi."})
+
 
 @app.post("/api/analyze")
 def api_analyze():
@@ -155,6 +164,7 @@ def api_analyze():
         ]
     })
 
+
 @app.post("/api/admin/action")
 def api_admin_action():
     payload = request.get_json(silent=True) or {}
@@ -174,6 +184,7 @@ def api_admin_action():
 
     return jsonify({"success": False, "message": "Geçersiz işlem."}), 400
 
+
 @app.get("/api/init-db")
 def init_db_route():
     import subprocess
@@ -187,6 +198,7 @@ def init_db_route():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
 @app.get("/api/run-update")
 def run_update():
     import subprocess
@@ -195,10 +207,16 @@ def run_update():
         return jsonify({"status": "unauthorized"}), 401
 
     try:
-        subprocess.run(["python", "run_data_update.py"], check=True)
-        return jsonify({"status": "ok", "message": "update started"})
+        subprocess.Popen(
+            ["python", "run_data_update.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        return jsonify({"status": "ok", "message": "update started in background"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
