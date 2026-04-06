@@ -1,3 +1,4 @@
+import os
 from flask import Flask, jsonify, request
 from settings import APP_NAME, SECRET_KEY, ADMIN_PASSWORD
 from db import fetch_all, fetch_one, execute
@@ -173,20 +174,32 @@ def api_admin_action():
 
     return jsonify({"success": False, "message": "Geçersiz işlem."}), 400
 
-
-@app.route("/api/run-update")
-def run_update():
-    from flask import request
+@app.get("/api/init-db")
+def init_db_route():
     import subprocess
 
     if request.args.get("key") != "123456":
-        return {"status": "unauthorized"}, 401
+        return jsonify({"status": "unauthorized"}), 401
+
+    try:
+        subprocess.run(["python", "init_db.py"], check=True)
+        return jsonify({"status": "ok", "message": "db initialized"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.get("/api/run-update")
+def run_update():
+    import subprocess
+
+    if request.args.get("key") != "123456":
+        return jsonify({"status": "unauthorized"}), 401
 
     try:
         subprocess.run(["python", "run_data_update.py"], check=True)
-        return {"status": "ok", "message": "update started"}
+        return jsonify({"status": "ok", "message": "update started"})
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
