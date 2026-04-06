@@ -369,23 +369,22 @@ def generate_daily_coupon_package(coupon_date: str):
     coupons_6 = []
     high_odd_coupons = []
 
-    # 3'lü güvenli kupon
+    # 3'lü güvenli kupon: wild kesinlikle yok
     c3_seed = take_top_unique(safe_pool, 3)
-    c3 = fill_to_target(c3_seed, balanced_pool + pool, 3, max_aggressive=0)
+    c3 = fill_to_target(c3_seed, safe_pool + balanced_pool, 3, max_aggressive=0)
     coupon3 = build_coupon(c3, "Güvenli")
     if coupon3:
         coupons_3.append(coupon3)
 
-    # 4'lü dengeli kupon
+    # 4'lü dengeli kupon: wild kesinlikle yok, max 1 agresif
     c4_seed = []
     c4_seed = unique_extend(c4_seed, safe_pool, 2)
     c4_seed = unique_extend(c4_seed, balanced_pool, 4)
-    c4 = fill_to_target(c4_seed, balanced_pool + aggressive_pool + pool, 4, max_aggressive=1)
+    c4 = fill_to_target(c4_seed, safe_pool + balanced_pool + aggressive_pool, 4, max_aggressive=1)
     coupon4 = build_coupon(c4, "Dengeli")
     if coupon4:
         coupons_4.append(coupon4)
 
-    # Kullanıcının isteği: 5'li ve 6'lı kupon üretme
     package = {
         "pool": pool_public,
         "high_odd_coupons": high_odd_coupons,
