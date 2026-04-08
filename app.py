@@ -1,4 +1,6 @@
 import os
+import sys
+import tempfile
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 from settings import APP_NAME, SECRET_KEY, ADMIN_PASSWORD
@@ -80,7 +82,6 @@ def get_normalized_odds_for_fixture(fixture_id):
         selection_key = str(row.get("selection_key") or "")
         odd = row.get("best_odd")
 
-        # Match Winner / 1X2
         if (
             market_key == "match winner"
             or ("match" in market_key and "winner" in market_key)
@@ -93,11 +94,7 @@ def get_normalized_odds_for_fixture(fixture_id):
             elif selection_key in {"away", "2"}:
                 set_if_empty("away_win", odd)
 
-        # Double chance
-        if (
-            "double chance" in market_key
-            or market_key in {"double_chance", "dc"}
-        ):
+        if "double chance" in market_key or market_key in {"double_chance", "dc"}:
             if selection_key in {"1x", "home/draw", "1-x"}:
                 set_if_empty("double_chance_1x", odd)
             elif selection_key in {"x2", "draw/away", "x-2"}:
@@ -105,7 +102,6 @@ def get_normalized_odds_for_fixture(fixture_id):
             elif selection_key in {"12", "home/away", "1-2"}:
                 set_if_empty("double_chance_12", odd)
 
-        # Both teams to score
         if (
             "both teams score" in market_key
             or "both teams to score" in market_key
@@ -116,7 +112,6 @@ def get_normalized_odds_for_fixture(fixture_id):
             elif selection_key in {"no", "ng", "btts no"}:
                 set_if_empty("btts_no", odd)
 
-        # Over / Under
         if "over" in selection_key and "1.5" in selection_key:
             set_if_empty("over_1_5", odd)
         if "under" in selection_key and "3.5" in selection_key:
@@ -220,6 +215,54 @@ def build_v2_prediction_response(fixture_id, match_row):
     }
 
 
+def _background_update_lock_path():
+    return os.path.join(tempfile.gettempdir(), "oranatlas_run_update.lock")
+
+
+def _is_update_running():
+    return os.path.exists(_background_update_lock_path())
+
+
+def _start_background_update():
+    import subprocess
+
+    if _is_update_running():
+        return "already_running"
+
+    lock_path = _background_update_lock_path()
+    with open(lock_path, "w", encoding="utf-8") as f:
+        f.write(str(datetime.now(timezone.utc)))
+
+    inline_runner = (
+        "import os, subprocess, sys; "
+        "lock_path=sys.argv[1]; "
+        "script=sys.argv[2]; "
+        "try:\n"
+        "    subprocess.run([sys.executable, script], check=False)\n"
+        "finally:\n"
+        "    try:\n"
+        "        os.remove(lock_path)\n"
+        "    except FileNotFoundError:\n"
+        "        pass"
+    )
+
+    command = [sys.executable or "python", "-c", inline_runner, lock_path, "run_data_update.py"]
+
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "cwd": os.getcwd(),
+    }
+
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    else:
+        kwargs["start_new_session"] = True
+
+    subprocess.Popen(command, **kwargs)
+    return "started"
+
+
 @app.get("/api/debug-routes")
 def debug_routes():
     return {"routes": sorted([str(rule) for rule in app.url_map.iter_rules()])}
@@ -228,7 +271,7 @@ def debug_routes():
 @app.get("/api/debug-version")
 def debug_version():
     return {
-        "version": "ORANATLAS DEBUG BUILD V6",
+        "version": "ORANATLAS DEBUG BUILD V7",
         "message": "Bu doğru app.py çalışıyor",
         "v2_prediction_enabled": prediction_service_v2 is not None
     }
@@ -418,7 +461,7 @@ def init_db_route():
         return jsonify({"status": "unauthorized"}), 401
 
     try:
-        subprocess.run(["python", "init_db.py"], check=True)
+        subprocess.run([sys.executable, "init_db.py"], check=True, cwd=os.getcwd())
         return jsonify({"status": "ok", "message": "db initialized"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -426,21 +469,24 @@ def init_db_route():
 
 @app.get("/api/run-update")
 def run_update():
-    import subprocess
-
     if request.args.get("key") != "123456":
         return jsonify({"status": "unauthorized"}), 401
 
     try:
-        subprocess.Popen(
-            ["python", "run_data_update.py"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
+        result = _start_background_update()
+        if result == "already_running":
+            return jsonify({"status": "ok", "message": "update already running"})
         return jsonify({"status": "ok", "message": "update started in background"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.get("/api/update-status")
+def update_status():
+    return jsonify({
+        "success": True,
+        "running": _is_update_running()
+    })
 
 
 if __name__ == "__main__":
